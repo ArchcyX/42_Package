@@ -13,8 +13,8 @@ HOME_LOCAL="$HOME/.local"
 NVIM_CONFIG="$HOME/.config/nvim"
 TMP_DIR="$HOME/tmp/nvim-install-$$"
 
-# Sürümler
-NVIM_VERSION="0.10.2"
+# Sürümler - Nightly kullanılacak (v0.11+ gerekli)
+NVIM_VERSION="nightly"
 RIPGREP_VERSION="14.1.0"
 FD_VERSION="10.2.0"
 NODE_VERSION="20.18.0"
@@ -128,63 +128,88 @@ setup_path() {
 }
 
 install_neovim() {
-    print_step "Neovim kuruluyor..."
+    print_step "Neovim Nightly (v0.11+) kuruluyor..."
     
-    if [ -f "$HOME_BIN/nvim" ] && "$HOME_BIN/nvim" --version >/dev/null 2>&1; then
-        if [ -d "$HOME_LOCAL/share/nvim/runtime" ]; then
-            local ver=$("$HOME_BIN/nvim" --version | head -n1)
-            print_success "Neovim zaten kurulu: $ver"
+    # Mevcut Neovim'i kontrol et - v0.11+ mı?
+    if [ -f "$HOME_LOCAL/bin/nvim" ] && "$HOME_LOCAL/bin/nvim" --version >/dev/null 2>&1; then
+        local current_ver=$("$HOME_LOCAL/bin/nvim" --version | head -n1)
+        if echo "$current_ver" | grep -qE "v0\.1[1-9]|v0\.[2-9][0-9]|v[1-9]"; then
+            print_success "Neovim v0.11+ zaten kurulu: $current_ver"
             return 0
         fi
     fi
     
     print_substep "Eski kurulum temizleniyor..."
-    rm -rf "$HOME_LOCAL/bin/nvim"
-    rm -rf "$HOME_LOCAL/lib/nvim"
-    rm -rf "$HOME_LOCAL/share/nvim/runtime"
+    rm -f "$HOME_LOCAL/bin/nvim"
     rm -f "$HOME_BIN/nvim"
     
-    cd "$TMP_DIR"
-    
+    # Nightly AppImage URL'leri (platform spesifik)
     local url=""
-    local archive=""
+    local nvim_bin="$HOME_LOCAL/bin/nvim"
     
     if [[ "$OS" == "linux" && "$ARCH" == "x86_64" ]]; then
-        url="https://github.com/neovim/neovim/releases/download/v${NVIM_VERSION}/nvim-linux64.tar.gz"
-        archive="nvim-linux64.tar.gz"
+        url="https://github.com/neovim/neovim/releases/download/nightly/nvim-linux-x86_64.appimage"
+    elif [[ "$OS" == "linux" && "$ARCH" == "aarch64" ]]; then
+        url="https://github.com/neovim/neovim/releases/download/nightly/nvim-linux-arm64.appimage"
     elif [[ "$OS" == "macos" && "$ARCH" == "x86_64" ]]; then
-        url="https://github.com/neovim/neovim/releases/download/v${NVIM_VERSION}/nvim-macos-x86_64.tar.gz"
-        archive="nvim-macos. tar.gz"
+        url="https://github.com/neovim/neovim/releases/download/nightly/nvim-macos-x86_64.tar.gz"
     elif [[ "$OS" == "macos" && "$ARCH" == "arm64" ]]; then
-        url="https://github.com/neovim/neovim/releases/download/v${NVIM_VERSION}/nvim-macos-arm64.tar.gz"
-        archive="nvim-macos. tar.gz"
+        url="https://github.com/neovim/neovim/releases/download/nightly/nvim-macos-arm64.tar.gz"
     else
-        print_error "Bu sistem için Neovim binary'si yok:  $OS $ARCH"
+        print_error "Bu sistem için Neovim Nightly yok: $OS $ARCH"
         exit 1
     fi
     
-    if !  download_file "$url" "$archive" "Neovim v${NVIM_VERSION}"; then
-        print_error "Neovim indirilemedi!"
-        exit 1
+    mkdir -p "$HOME_LOCAL/bin"
+    
+    if [[ "$OS" == "linux" ]]; then
+        # Linux: AppImage olarak indir
+        print_substep "Neovim Nightly AppImage indiriliyor..."
+        if ! curl -fsSL --connect-timeout 30 --max-time 600 -o "$nvim_bin" "$url"; then
+            print_error "Neovim indirilemedi!"
+            exit 1
+        fi
+        
+        # İndirilen dosyanın geçerli olup olmadığını kontrol et (HTML 404 değil mi?)
+        if head -c 20 "$nvim_bin" | grep -qi "<!DOCTYPE\|<html\|Not Found"; then
+            print_error "İndirilen dosya geçersiz (muhtemelen 404 sayfası)!"
+            rm -f "$nvim_bin"
+            exit 1
+        fi
+        
+        chmod u+x "$nvim_bin"
+    else
+        # macOS: tar.gz olarak indir ve çıkart
+        cd "$TMP_DIR"
+        local archive="nvim-macos.tar.gz"
+        
+        print_substep "Neovim Nightly indiriliyor..."
+        if ! curl -fsSL --connect-timeout 30 --max-time 600 -o "$archive" "$url"; then
+            print_error "Neovim indirilemedi!"
+            exit 1
+        fi
+        
+        tar -xzf "$archive"
+        local extract_dir=$(ls -d nvim-* 2>/dev/null | head -n1)
+        
+        if [ ! -d "$extract_dir" ]; then
+            print_error "Çıkartma başarısız!"
+            exit 1
+        fi
+        
+        cp -r "$extract_dir"/* "$HOME_LOCAL/"
     fi
     
-    print_substep "Arşiv çıkartılıyor..."
-    tar -xzf "$archive"
-    
-    local extract_dir=$(ls -d nvim-* 2>/dev/null | head -n1)
-    
-    if [ !  -d "$extract_dir" ]; then
-        print_error "Çıkartma başarısız!"
-        exit 1
-    fi
-    
-    print_substep "Dosyalar kopyalanıyor (bin, lib, share)..."
-    cp -r "$extract_dir"/* "$HOME_LOCAL/"
-    
+    # Symlink oluştur (PATH önceliği için)
     ln -sf "$HOME_LOCAL/bin/nvim" "$HOME_BIN/nvim"
     
-    if "$HOME_BIN/nvim" --version >/dev/null 2>&1; then
-        print_success "Neovim kuruldu:  $("$HOME_BIN/nvim" --version | head -n1)"
+    # Hash cache'i temizle (eski nvim yolunu unuttur)
+    hash -r 2>/dev/null || true
+    
+    # Doğrulama
+    if "$HOME_LOCAL/bin/nvim" --version >/dev/null 2>&1; then
+        local installed_ver=$("$HOME_LOCAL/bin/nvim" --version | head -n1)
+        print_success "Neovim kuruldu: $installed_ver"
     else
         print_error "Neovim çalıştırılamadı!"
         exit 1
@@ -308,6 +333,80 @@ install_nodejs() {
     else
         print_warning "Node.js indirilemedi"
     fi
+}
+
+setup_npm_and_providers() {
+    print_step "NPM ve Neovim Provider'ları ayarlanıyor..."
+    
+    # NPM global dizini oluştur (sudo'suz kurulum için)
+    mkdir -p "$HOME/.npm-global"
+    
+    # Potansiyel nvm çakışmasını önle - .npmrc temizle
+    if [ -f "$HOME/.npmrc" ]; then
+        if grep -q "prefix" "$HOME/.npmrc" 2>/dev/null; then
+            print_substep "Eski npm prefix ayarı temizleniyor..."
+            sed -i '/^prefix/d' "$HOME/.npmrc" 2>/dev/null || true
+        fi
+    fi
+    
+    # NPM prefix ayarı
+    if command -v npm >/dev/null 2>&1; then
+        print_substep "NPM global prefix ayarlanıyor..."
+        npm config set prefix "$HOME/.npm-global" 2>/dev/null
+        
+        # PATH'e npm-global ekle (geçici)
+        export PATH="$HOME/.npm-global/bin:$PATH"
+        
+        # Neovim Node.js provider'ı kur
+        print_substep "Neovim Node.js provider kuruluyor..."
+        if npm install -g neovim 2>/dev/null; then
+            print_success "neovim (npm) kuruldu"
+        else
+            print_warning "neovim (npm) kurulamadı"
+        fi
+        
+        # Tree-sitter CLI kur
+        print_substep "Tree-sitter CLI kuruluyor..."
+        if npm install -g tree-sitter-cli 2>/dev/null; then
+            print_success "tree-sitter-cli kuruldu"
+        else
+            print_warning "tree-sitter-cli kurulamadı"
+        fi
+    else
+        print_warning "npm bulunamadı, Node.js provider atlanıyor"
+    fi
+    
+    # Python provider (pynvim) kur
+    if command -v pip3 >/dev/null 2>&1; then
+        print_substep "Python provider (pynvim) kuruluyor..."
+        if pip3 install --user --upgrade pynvim 2>/dev/null; then
+            print_success "pynvim kuruldu"
+        else
+            print_warning "pynvim kurulamadı"
+        fi
+    elif command -v pip >/dev/null 2>&1; then
+        print_substep "Python provider (pynvim) kuruluyor..."
+        if pip install --user --upgrade pynvim 2>/dev/null; then
+            print_success "pynvim kuruldu"
+        else
+            print_warning "pynvim kurulamadı"
+        fi
+    else
+        print_warning "pip bulunamadı, Python provider atlanıyor"
+    fi
+    
+    # Shell config'lere npm-global PATH ekle (kalıcı)
+    for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
+        if [ -f "$rc" ]; then
+            if ! grep -q 'npm-global/bin' "$rc" 2>/dev/null; then
+                echo "" >> "$rc"
+                echo "# NPM Global Path (Sudosuz Kurulumlar İçin)" >> "$rc"
+                echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> "$rc"
+            fi
+        fi
+    done
+    
+    print_success "Provider'lar ve NPM ayarları tamamlandı"
 }
 
 backup_config() {
@@ -578,10 +677,12 @@ main() {
     
     echo ""
     echo -e "${BOLD}Kurulacaklar:${NC}"
-    echo "  • Neovim v$NVIM_VERSION"
+    echo "  • Neovim Nightly (v0.11+)"
     echo "  • Ripgrep v$RIPGREP_VERSION"
     echo "  • fd v$FD_VERSION"
     echo "  • Node.js v$NODE_VERSION"
+    echo "  • NPM paketleri (neovim, tree-sitter-cli)"
+    echo "  • Python paketleri (pynvim)"
     echo "  • w7h3r-NeovimConfig"
     echo ""
     
@@ -597,6 +698,7 @@ main() {
     install_ripgrep
     install_fd
     install_nodejs
+    setup_npm_and_providers
     backup_config
     download_config
     configure_user
